@@ -1,0 +1,51 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /rpa-ai
+
+spring:
+  application:
+    name: rpa-ai-agent
+  profiles:
+    active: dev
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/rpa_ai?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=UTF-8&allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/rpa_ai_logs
+      database: rpa_ai_logs
+
+    neo4j:
+      uri: bolt://localhost:7687
+      authentication:
+        username: neo4j
+        password: rpaai123
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+rpa:
+  selenium:
+    chrome-driver-path: D:/tools/chromedriver.exe
+  ai:
+    llm:
+      provider: dashscope
+      api-key: sk-13b1261e6e5d4db8a7e286347a42171f
+      model: qwen-plus
+
+logging:
+  level:
+    com.rpaai: DEBUG
