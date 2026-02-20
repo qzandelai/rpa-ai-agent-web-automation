@@ -10,12 +10,11 @@ const request = async (url, options = {}) => {
       },
       ...options
     })
-    
+
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`)
     }
-    
-    // 根据响应类型解析
+
     const contentType = response.headers.get('content-type')
     if (contentType && contentType.includes('application/json')) {
       return await response.json()
@@ -59,14 +58,14 @@ export const testAIAPI = (question) => {
   return fetch(`${API_BASE}/test/ai?question=${encodeURIComponent(question)}`).then(r => r.text())
 }
 
-// ✅ 新增：执行任务
+// 执行任务
 export const executeTaskAPI = (taskId) => {
   return request(`${API_BASE}/execution/task/${taskId}`, {
     method: 'POST'
   })
 }
 
-// ✅ 新增：直接执行步骤（测试用）
+// 直接执行步骤（测试用）
 export const executeStepsAPI = (steps) => {
   return request(`${API_BASE}/execution/steps`, {
     method: 'POST',
@@ -74,9 +73,29 @@ export const executeStepsAPI = (steps) => {
   })
 }
 
-// ✅ 新增：关闭浏览器
+// 关闭浏览器
 export const closeBrowserAPI = () => {
   return request(`${API_BASE}/execution/close`, {
     method: 'POST'
   })
+}
+
+// ✅ 新增：获取最近日志
+export const getRecentLogsAPI = (limit = 20) => {
+  return request(`${API_BASE}/logs/recent?limit=${limit}`)
+}
+
+// ✅ 新增：获取任务历史
+export const getTaskLogsAPI = (taskId) => {
+  return request(`${API_BASE}/logs/task/${taskId}`)
+}
+
+// ✅ 新增：获取执行统计
+export const getExecutionStatsAPI = (taskId) => {
+  return request(`${API_BASE}/logs/stats/${taskId}`)
+}
+
+// ✅ 新增：获取知识图谱统计
+export const getKnowledgeGraphStatsAPI = () => {
+  return request(`${API_BASE}/kg/stats`)
 }
