@@ -98,11 +98,11 @@
 
       <div v-else class="logs-list">
         <el-collapse v-model="activeLogs">
-          <el-collapse-item
-              v-for="log in filteredLogs"
-              :key="log.id"
-              :name="log.id"
-              :class="['log-item', log.success ? 'log-success' : 'log-fail']"
+          <el-collapse-item 
+            v-for="log in filteredLogs" 
+            :key="log.id"
+            :name="log.id"
+            :class="['log-item', log.success ? 'log-success' : 'log-fail']"
           >
             <template #title>
               <div class="log-header">
@@ -145,11 +145,11 @@
                 <h4>📝 步骤执行详情</h4>
                 <el-timeline>
                   <el-timeline-item
-                      v-for="(step, index) in log.stepLogs"
-                      :key="index"
-                      :type="step.success ? 'success' : 'danger'"
-                      :icon="step.success ? 'Check' : 'Close'"
-                      :timestamp="step.executionTimeMs + 'ms'"
+                    v-for="(step, index) in log.stepLogs"
+                    :key="index"
+                    :type="step.success ? 'success' : 'danger'"
+                    :icon="step.success ? 'Check' : 'Close'"
+                    :timestamp="step.executionTimeMs + 'ms'"
                   >
                     <div class="step-item">
                       <div class="step-header">
@@ -173,11 +173,11 @@
               <!-- 元数据 -->
               <div class="metadata-section" v-if="log.metadata">
                 <h4>📊 执行环境</h4>
-                <el-tag
-                    v-for="(value, key) in log.metadata"
-                    :key="key"
-                    size="small"
-                    class="metadata-tag"
+                <el-tag 
+                  v-for="(value, key) in log.metadata" 
+                  :key="key"
+                  size="small"
+                  class="metadata-tag"
                 >
                   {{ key }}: {{ value }}
                 </el-tag>
@@ -190,13 +190,13 @@
       <!-- 分页 -->
       <div class="pagination-wrapper" v-if="filteredLogs.length > 0">
         <el-pagination
-            v-model:current-page="currentPage"
-            v-model:page-size="pageSize"
-            :page-sizes="[5, 10, 20, 50]"
-            :total="filteredLogs.length"
-            layout="total, sizes, prev, pager, next"
-            @size-change="handleSizeChange"
-            @current-change="handleCurrentChange"
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :page-sizes="[5, 10, 20, 50]"
+          :total="filteredLogs.length"
+          layout="total, sizes, prev, pager, next"
+          @size-change="handleSizeChange"
+          @current-change="handleCurrentChange"
         />
       </div>
     </el-card>
@@ -236,10 +236,10 @@
 </template>
 
 <script setup>
-import {ref, onMounted, computed} from 'vue'
-import {ElMessage} from 'element-plus'
-import {Refresh, ArrowRight, Link, Check, Close} from '@element-plus/icons-vue'
-import {getRecentLogsAPI, getKnowledgeGraphStatsAPI} from '@/api/taskApi'
+import { ref, onMounted, computed } from 'vue'
+import { ElMessage } from 'element-plus'
+import { Refresh, ArrowRight, Link, Check, Close } from '@element-plus/icons-vue'
+import { getRecentLogsAPI, getKnowledgeGraphStatsAPI } from '@/api/taskApi'
 
 // 数据
 const logs = ref([])
@@ -354,7 +354,7 @@ onMounted(() => {
 
 .stats-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
 }
 
 .stats-item {
@@ -373,21 +373,10 @@ onMounted(() => {
   border-radius: 12px;
 }
 
-.stats-icon.blue {
-  background: #e6f7ff;
-}
-
-.stats-icon.green {
-  background: #f6ffed;
-}
-
-.stats-icon.red {
-  background: #fff1f0;
-}
-
-.stats-icon.orange {
-  background: #fff7e6;
-}
+.stats-icon.blue { background: #e6f7ff; }
+.stats-icon.green { background: #f6ffed; }
+.stats-icon.red { background: #fff1f0; }
+.stats-icon.orange { background: #fff7e6; }
 
 .stats-value {
   font-size: 28px;
@@ -413,7 +402,7 @@ onMounted(() => {
 
 .quick-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
   border-color: #409eff;
 }
 
