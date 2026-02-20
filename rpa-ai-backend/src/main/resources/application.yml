@@ -8,6 +8,8 @@ spring:
     name: rpa-ai-agent
   profiles:
     active: dev  # 默认激活dev，本地开发时改为local
+  websocket:
+    enabled: true
 
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -29,10 +31,14 @@ spring:
       ddl-auto: update
     show-sql: true
 
-# 默认空配置，实际值从profile或环境读取
+# 任务调度配置
 rpa:
-  selenium:
-    chrome-driver-path:
+  scheduler:
+    max-concurrent-tasks: 5
+    task-timeout-minutes: 30
+    cleanup-interval-minutes: 5
+  browser:
+    heartbeat-timeout-seconds: 60
   ai:
     llm:
       provider: dashscope

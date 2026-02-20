@@ -2,6 +2,8 @@ package com.rpaai.service.impl;
 
 import com.rpaai.entity.AutomationTask;
 import com.rpaai.repository.AutomationTaskRepository;
+import com.rpaai.service.RpaTaskScheduler;
+import com.rpaai.service.TaskPriority;
 import com.rpaai.service.TaskService;
 import com.rpaai.service.AiParsingService;
 import lombok.extern.slf4j.Slf4j;
@@ -19,22 +21,21 @@ public class TaskServiceImpl implements TaskService {
     @Autowired
     private AiParsingService aiParsingService;
 
+    @Autowired
+    private RpaTaskScheduler rpaTaskScheduler;
+
     @Override
     @Transactional
     public AutomationTask parseNaturalLanguageTask(String naturalLanguage) {
         log.info("🚀 开始解析任务: {}", naturalLanguage);
 
-        // 使用AI解析
         AutomationTask task = aiParsingService.parseWithAI(naturalLanguage);
 
-        // ✅ 新增：保存前检查configJson长度
         if (task.getConfigJson() != null && task.getConfigJson().length() > 16777215) {
-            // LONGTEXT最大约4GB，但超过16MB记录警告
             log.error("❌ 生成的配置JSON过大 ({} 字符)，无法存储", task.getConfigJson().length());
             throw new RuntimeException("任务配置过于复杂，请简化任务描述");
         }
 
-        // 保存解析结果到数据库
         try {
             AutomationTask saved = taskRepository.save(task);
             log.info("✅ 任务保存成功，ID: {}", saved.getId());
@@ -49,7 +50,6 @@ public class TaskServiceImpl implements TaskService {
     @Transactional
     public AutomationTask saveTask(AutomationTask task) {
         if (task.getId() != null) {
-            // 更新操作，确保时间戳更新
             task.setUpdateTime(java.time.LocalDateTime.now());
         }
         return taskRepository.save(task);
@@ -59,5 +59,27 @@ public class TaskServiceImpl implements TaskService {
     @Transactional(readOnly = true)
     public AutomationTask getTaskById(Long id) {
         return taskRepository.findById(id).orElse(null);
+    }
+
+    // 🆕 新增：提交任务到调度队列执行
+    @Override
+    public String submitTaskToScheduler(Long taskId, String userId, TaskPriority priority) {
+        log.info("📥 提交任务到调度器: taskId={}, userId={}", taskId, userId);
+
+        AutomationTask task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new RuntimeException("任务不存在: " + taskId));
+
+        if (task.getConfigJson() == null || task.getConfigJson().isEmpty()) {
+            throw new RuntimeException("任务配置为空，请先解析任务");
+        }
+
+        return rpaTaskScheduler.submitTask(task, userId, priority);
+    }
+
+    // 🆕 新增：立即执行任务（不进入队列等待）
+    @Override
+    public String executeImmediately(Long taskId, String userId) {
+        log.info("⚡ 立即执行任务: taskId={}", taskId);
+        return submitTaskToScheduler(taskId, userId, TaskPriority.HIGH);
     }
 }
