@@ -7,22 +7,17 @@ spring:
   application:
     name: rpa-ai-agent
   profiles:
-    active: dev
+    active: dev  # 默认激活dev，本地开发时改为local
 
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/rpa_ai?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=UTF-8&allowPublicKeyRetrieval=true
     username: root
     password: 123456
-    hikari:
-      minimum-idle: 5
-      maximum-pool-size: 20
 
   data:
     mongodb:
       uri: mongodb://localhost:27017/rpa_ai_logs
-      database: rpa_ai_logs
-
     neo4j:
       uri: bolt://localhost:7687
       authentication:
@@ -33,17 +28,15 @@ spring:
     hibernate:
       ddl-auto: update
     show-sql: true
-    properties:
-      hibernate:
-        format_sql: true
 
+# 默认空配置，实际值从profile或环境读取
 rpa:
   selenium:
-    chrome-driver-path: D:/tools/chromedriver.exe
+    chrome-driver-path:
   ai:
     llm:
       provider: dashscope
-      api-key: sk-13b1261e6e5d4db8a7e286347a42171f
+      api-key:  # 留空，从local配置读取
       model: qwen-plus
 
 logging:

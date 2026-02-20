@@ -1,11 +1,11 @@
 package com.rpaai.service;
 
 import com.alibaba.fastjson2.JSON;
-import com.alibaba.fastjson2.TypeReference;
 import com.rpaai.core.rpa.RpaExecutionEngine;
 import com.rpaai.core.rpa.RpaExecutionResult;
 import com.rpaai.entity.AutomationTask;
 import com.rpaai.entity.RpaStep;
+import com.rpaai.entity.mongodb.ExecutionLogDocument;
 import com.rpaai.repository.AutomationTaskRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,8 +23,11 @@ public class RpaExecutionService {
     @Autowired
     private AutomationTaskRepository taskRepository;
 
+    @Autowired
+    private ExecutionLogService logService;  // 新增
+
     /**
-     * 执行指定ID的任务
+     * 执行指定ID的任务（带日志记录）
      */
     public RpaExecutionResult executeTask(Long taskId) {
         log.info("🎯 开始执行任务 ID: {}", taskId);
@@ -36,32 +39,51 @@ public class RpaExecutionService {
         // 解析步骤
         List<RpaStep> steps = parseSteps(task.getConfigJson());
 
-        // 执行任务
-        RpaExecutionResult result = executionEngine.executeTask(steps);
+        // 开始记录日志
+        ExecutionLogDocument executionLog = logService.startExecution(
+                taskId,
+                task.getTaskName(),
+                task.getDescription(),
+                steps
+        );
 
-        // 保存执行记录（可选）
-        // ...
+        // 执行任务
+        RpaExecutionResult result;
+        try {
+            result = executionEngine.executeTask(steps);
+
+            // 记录每步结果
+            for (int i = 0; i < result.getStepResults().size(); i++) {
+                logService.recordStep(executionLog, i, result.getStepResults().get(i));
+            }
+
+        } catch (Exception e) {
+            // 执行异常
+            result = new RpaExecutionResult();
+            result.setSuccess(false);
+            result.setErrorMessage("执行异常: " + e.getMessage());
+            result.setCompletedSteps(0);
+        }
+
+        // 完成日志记录
+        String screenshotPath = null; // 可以从result中获取
+        logService.finishExecution(executionLog, result, screenshotPath);
 
         return result;
     }
 
     /**
-     * 直接执行步骤列表（用于测试）
+     * 直接执行步骤列表（测试用，不记录日志）
      */
     public RpaExecutionResult executeSteps(List<RpaStep> steps) {
         return executionEngine.executeTask(steps);
     }
 
-    /**
-     * 解析JSON为步骤列表
-     */
     private List<RpaStep> parseSteps(String configJson) {
         if (configJson == null || configJson.isEmpty()) {
             throw new RuntimeException("任务配置为空");
         }
-
         try {
-            // 解析外层JSON获取steps数组
             com.alibaba.fastjson2.JSONObject json = JSON.parseObject(configJson);
             return json.getList("steps", RpaStep.class);
         } catch (Exception e) {

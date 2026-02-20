@@ -16,7 +16,7 @@ public class AutomationTask {
     private String taskName;
 
     @Lob
-    @Column(name = "description")
+    @Column(name = "description", columnDefinition = "TEXT")
     private String description;
 
     @Column(name = "status", length = 20)
@@ -31,7 +31,14 @@ public class AutomationTask {
     @Column(name = "update_time")
     private LocalDateTime updateTime = LocalDateTime.now();
 
+    // ✅ 关键修改：明确指定为 LONGTEXT 类型
     @Lob
-    @Column(name = "config_json")
+    @Column(name = "config_json", columnDefinition = "LONGTEXT")
     private String configJson;
+
+    // ✅ 新增：添加更新时间的自动更新
+    @PreUpdate
+    public void preUpdate() {
+        this.updateTime = LocalDateTime.now();
+    }
 }
