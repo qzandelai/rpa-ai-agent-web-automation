@@ -16,5 +16,8 @@ public class WebSocketMessage {
     private String taskId;
     private String stepId;
     private Map<String, Object> data;
+
+    // ✅ 修复：添加 @Builder.Default
+    @Builder.Default
     private Long timestamp = System.currentTimeMillis();
 }

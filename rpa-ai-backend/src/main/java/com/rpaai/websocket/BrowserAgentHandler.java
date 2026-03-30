@@ -2,10 +2,11 @@ package com.rpaai.websocket;
 
 import com.alibaba.fastjson2.JSON;
 import com.rpaai.entity.BrowserSession;
+import com.rpaai.event.*;
 import com.rpaai.service.BrowserSessionManager;
-import com.rpaai.service.RpaTaskScheduler;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -27,7 +28,7 @@ public class BrowserAgentHandler extends TextWebSocketHandler {
     private BrowserSessionManager sessionManager;
 
     @Autowired
-    private RpaTaskScheduler rpaTaskScheduler;
+    private ApplicationEventPublisher eventPublisher;
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
@@ -72,8 +73,6 @@ public class BrowserAgentHandler extends TextWebSocketHandler {
         String userId = (String) data.get("userId");
         String fingerprint = (String) data.get("fingerprint");
 
-        log.info("📝 收到注册请求: userId={}, fingerprint={}", userId, fingerprint);
-
         if (userId == null || userId.isEmpty()) {
             userId = "anonymous";
         }
@@ -100,25 +99,22 @@ public class BrowserAgentHandler extends TextWebSocketHandler {
         String title = (String) data.get("title");
 
         sessionManager.updatePageInfo(session.getId(), url, title);
-        rpaTaskScheduler.onPageChanged(session.getId(), url);
+
+        eventPublisher.publishEvent(new PageChangedEvent(
+                this, session.getId(), url, title));
     }
 
     private void handleElementFound(WebSocketSession session, WebSocketMessage msg) {
         Map<String, Object> data = msg.getData();
-        rpaTaskScheduler.onElementLocated(
-                (String) data.get("taskId"),
-                (String) data.get("stepId"),
-                (boolean) data.get("found"),
-                data
-        );
+        String taskId = (String) data.get("taskId");
+        String stepId = (String) data.get("stepId");
+        boolean found = data.get("found") != null && (boolean) data.get("found");
+
+        eventPublisher.publishEvent(new ElementLocatedEvent(
+                this, taskId, stepId, found, data));
     }
 
-    /**
-     * 🆕 关键修复：正确处理ACTION_RESULT
-     * 从 msg 中获取 taskId 和 stepId，而不是从 data 中
-     */
     private void handleActionResult(WebSocketSession session, WebSocketMessage msg) {
-        // 关键修复：从 msg 中获取，不是从 data 中获取
         String taskId = msg.getTaskId();
         String stepId = msg.getStepId();
         Map<String, Object> data = msg.getData();
@@ -132,23 +128,23 @@ public class BrowserAgentHandler extends TextWebSocketHandler {
             return;
         }
 
-        Boolean success = data != null ? (Boolean) data.get("success") : null;
-        if (success == null) {
-            success = false;
-        }
+        Boolean success = data != null ? (Boolean) data.get("success") : false;
 
         log.info("✅ 处理动作结果: taskId={}, stepId={}, success={}", taskId, stepId, success);
 
-        rpaTaskScheduler.onStepCompleted(taskId, stepId, success, data);
+        eventPublisher.publishEvent(new StepCompletedEvent(
+                this, taskId, stepId, success, data));
     }
 
     private void handleBrowserError(WebSocketSession session, WebSocketMessage msg) {
         Map<String, Object> data = msg.getData();
         String taskId = data != null ? (String) data.get("taskId") : null;
         String error = data != null ? (String) data.get("error") : "未知错误";
+        String stepId = data != null ? (String) data.get("stepId") : null;
 
         if (taskId != null) {
-            rpaTaskScheduler.onStepError(taskId, error, data);
+            eventPublisher.publishEvent(new StepFailedEvent(
+                    this, taskId, stepId, error, data));
         }
     }
 
@@ -171,17 +167,8 @@ public class BrowserAgentHandler extends TextWebSocketHandler {
     public void sendCommand(String browserSessionId, AgentCommand command) {
         WebSocketSession session = browserSessions.get(browserSessionId);
 
-        log.info("📤 准备发送指令到 [{}], session存在: {}, session开放: {}",
-                browserSessionId,
-                session != null,
-                session != null ? session.isOpen() : "N/A");
-
-        if (session == null) {
-            throw new RuntimeException("浏览器会话不存在: " + browserSessionId);
-        }
-
-        if (!session.isOpen()) {
-            throw new RuntimeException("浏览器会话已关闭: " + browserSessionId);
+        if (session == null || !session.isOpen()) {
+            throw new RuntimeException("浏览器会话不存在或已关闭: " + browserSessionId);
         }
 
         Map<String, Object> data = new HashMap<>();
@@ -190,7 +177,6 @@ public class BrowserAgentHandler extends TextWebSocketHandler {
         data.put("value", command.getValue());
         data.put("timeout", command.getTimeout() != null ? command.getTimeout() : 10000);
         data.put("waitForNavigation", command.getWaitForNavigation() != null ? command.getWaitForNavigation() : false);
-        // 关键修复：添加taskId和stepId到data
         data.put("taskId", command.getTaskId());
         data.put("stepId", command.getStepId());
 

@@ -49,10 +49,10 @@ public class DashScopeChatModel implements ChatLanguageModel {
 
     @Override
     public Response<AiMessage> generate(List<ChatMessage> messages) {
-        // 简化实现：取最后一条用户消息
+        // ✅ 修复：使用 text() 的替代方法
         String lastMessage = messages.stream()
                 .filter(msg -> msg.type() == dev.langchain4j.data.message.ChatMessageType.USER)
-                .map(ChatMessage::text)
+                .map(this::extractText)  // 使用辅助方法替代直接的 text()
                 .findFirst()
                 .orElse("");
 
@@ -60,7 +60,20 @@ public class DashScopeChatModel implements ChatLanguageModel {
 
         return Response.from(
                 AiMessage.from(response),
-                new TokenUsage(0, 0) // 实际项目中应解析真实token使用量
+                new TokenUsage(0, 0)
         );
+    }
+
+    // ✅ 添加辅助方法安全提取文本
+    private String extractText(ChatMessage message) {
+        // 根据消息类型安全提取文本
+        if (message instanceof dev.langchain4j.data.message.UserMessage) {
+            return ((dev.langchain4j.data.message.UserMessage) message).singleText();
+        } else if (message instanceof dev.langchain4j.data.message.SystemMessage) {
+            return ((dev.langchain4j.data.message.SystemMessage) message).text();
+        } else if (message instanceof AiMessage) {
+            return ((AiMessage) message).text();
+        }
+        return "";
     }
 }

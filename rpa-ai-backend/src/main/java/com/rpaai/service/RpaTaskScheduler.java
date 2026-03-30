@@ -4,11 +4,12 @@ import com.rpaai.core.rpa.RpaExecutionResult;
 import com.rpaai.core.rpa.RpaStepResult;
 import com.rpaai.entity.*;
 import com.rpaai.entity.mongodb.ExecutionLogDocument;
+import com.rpaai.event.*;
 import com.rpaai.websocket.AgentCommand;
 import com.rpaai.websocket.BrowserAgentHandler;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Lazy;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -20,25 +21,24 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 public class RpaTaskScheduler {
-    private final BrowserAgentHandler browserHandler;
-    private final BrowserSessionManager sessionManager;
-    private final AiParsingService aiParsingService;
-    private final KnowledgeGraphService knowledgeGraphService;
-    private final ExecutionLogService executionLogService;
 
     @Autowired
-    public RpaTaskScheduler(
-            @Lazy BrowserAgentHandler browserHandler,
-            BrowserSessionManager sessionManager,
-            AiParsingService aiParsingService,
-            KnowledgeGraphService knowledgeGraphService,
-            ExecutionLogService executionLogService) {
-        this.browserHandler = browserHandler;
-        this.sessionManager = sessionManager;
-        this.aiParsingService = aiParsingService;
-        this.knowledgeGraphService = knowledgeGraphService;
-        this.executionLogService = executionLogService;
-    }
+    private BrowserAgentHandler browserHandler;
+
+    @Autowired
+    private BrowserSessionManager sessionManager;
+
+    @Autowired
+    private AiParsingService aiParsingService;
+
+    @Autowired
+    private KnowledgeGraphService knowledgeGraphService;
+
+    @Autowired
+    private ExecutionLogService executionLogService;
+
+    @Autowired
+    private ImageLocatorService imageLocatorService;
 
     private final PriorityBlockingQueue<ScheduledTask> taskQueue =
             new PriorityBlockingQueue<>(100, Comparator.comparingInt(ScheduledTask::getPriority).reversed());
@@ -114,6 +114,7 @@ public class RpaTaskScheduler {
             log.info("🔐 任务关联凭据ID: {}，开始替换占位符", task.getCredentialsId());
             steps = aiParsingService.resolveCredentials(steps);
         }
+
         ExecutionLogDocument executionLog = executionLogService.startExecution(
                 task.getId(),
                 task.getTaskName(),
@@ -190,6 +191,172 @@ public class RpaTaskScheduler {
         }
     }
 
+    private StepResult executeStepWithRetry(String executionId, String browserId,
+                                            RpaStep step, TaskExecutionContext context) {
+        int maxRetries = step.getRetryCount() != null ? step.getRetryCount() : 3;
+
+        for (int attempt = 0; attempt < maxRetries; attempt++) {
+            if (context.isCancelled() || !"RUNNING".equals(context.getStatus())) {
+                return StepResult.fail(step.getStepId(), "任务已取消或完成");
+            }
+
+            try {
+                log.info("🎯 执行步骤 {}: action={}, target={}", step.getStepId(), step.getAction(), step.getTarget());
+
+                AgentCommand command = AgentCommand.builder()
+                        .taskId(executionId)
+                        .stepId(String.valueOf(step.getStepId()))
+                        .action(step.getAction())
+                        .target(step.getTarget())
+                        .value(step.getValue())
+                        .timeout(15000)
+                        .waitForNavigation(false)
+                        .build();
+
+                CompletableFuture<Map<String, Object>> future = new CompletableFuture<>();
+                context.registerPendingStep(step.getStepId(), future);
+
+                browserHandler.sendCommand(browserId, command);
+
+                Map<String, Object> result = future.get(15, TimeUnit.SECONDS);
+
+                boolean success = (boolean) result.get("success");
+                if (success) {
+                    return StepResult.success(step.getStepId(), (String) result.get("message"));
+                } else {
+                    throw new RuntimeException((String) result.get("error"));
+                }
+
+            } catch (Exception e) {
+                context.removePendingStep(String.valueOf(step.getStepId()));
+                log.error("❌ 步骤 {} 尝试 {}/{} 失败: {}", step.getStepId(), attempt + 1, maxRetries, e.getMessage());
+
+                if (attempt < maxRetries - 1) {
+                    long waitMs = (long) Math.pow(2, attempt) * 1000;
+                    try {
+                        Thread.sleep(waitMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return StepResult.fail(step.getStepId(), "被中断");
+                    }
+
+                    if (e.getMessage() != null && e.getMessage().contains("not found")
+                            && step.getImageTemplate() != null && attempt == maxRetries - 2) {
+                        log.info("🖼️ 尝试使用图像识别定位元素");
+                        Optional<StepResult> imageResult = attemptImageLocation(executionId, browserId, step, context);
+                        if (imageResult.isPresent()) {
+                            return imageResult.get();
+                        }
+                    }
+
+                    if (step.getFallbackTarget() != null) {
+                        step.setTarget(step.getFallbackTarget());
+                    }
+                } else {
+                    return StepResult.fail(step.getStepId(), "步骤执行失败: " + e.getMessage());
+                }
+            }
+        }
+
+        return StepResult.fail(step.getStepId(), "超过最大重试次数");
+    }
+
+    private Optional<StepResult> attemptImageLocation(String executionId, String browserId,
+                                                      RpaStep step, TaskExecutionContext context) {
+        try {
+            AgentCommand screenshotCmd = AgentCommand.builder()
+                    .taskId(executionId)
+                    .stepId(String.valueOf(step.getStepId()))
+                    .action("screenshot")
+                    .timeout(5000)
+                    .build();
+
+            CompletableFuture<Map<String, Object>> future = new CompletableFuture<>();
+            context.registerPendingStep(step.getStepId(), future);
+            browserHandler.sendCommand(browserId, screenshotCmd);
+
+            Map<String, Object> result = future.get(5, TimeUnit.SECONDS);
+            String base64Image = (String) result.get("imageData");
+
+            if (base64Image != null) {
+                Optional<int[]> coordinates = imageLocatorService.locateElement(base64Image, step.getImageTemplate());
+
+                if (coordinates.isPresent()) {
+                    int[] xy = coordinates.get();
+                    log.info("🖼️ 图像识别成功，坐标: ({}, {})", xy[0], xy[1]);
+
+                    AgentCommand clickCmd = AgentCommand.builder()
+                            .taskId(executionId)
+                            .stepId(String.valueOf(step.getStepId()))
+                            .action("click_by_coordinates")
+                            .target(xy[0] + "," + xy[1])
+                            .timeout(5000)
+                            .build();
+
+                    CompletableFuture<Map<String, Object>> clickFuture = new CompletableFuture<>();
+                    context.registerPendingStep(step.getStepId(), clickFuture);
+                    browserHandler.sendCommand(browserId, clickCmd);
+
+                    Map<String, Object> clickResult = clickFuture.get(5, TimeUnit.SECONDS);
+                    if ((boolean) clickResult.get("success")) {
+                        return Optional.of(StepResult.success(step.getStepId(), "通过图像识别定位并点击成功"));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.error("图像识别定位失败: {}", e.getMessage());
+        }
+        return Optional.empty();
+    }
+
+    @EventListener
+    public void onPageChanged(PageChangedEvent event) {
+        runningTasks.values().stream()
+                .filter(t -> event.getBrowserSessionId().equals(t.getBrowserSessionId()))
+                .forEach(t -> t.setCurrentUrl(event.getUrl()));
+    }
+
+    @EventListener
+    public void onElementLocated(ElementLocatedEvent event) {
+        TaskExecutionContext context = runningTasks.get(event.getTaskId());
+        if (context != null) {
+            CompletableFuture<Map<String, Object>> future = context.getPendingStep(event.getStepId());
+            if (future != null) {
+                future.complete(Map.of(
+                        "success", event.isFound(),
+                        "message", event.isFound() ? "元素已找到" : "元素未找到",
+                        "data", event.getData() != null ? event.getData() : new HashMap<>()
+                ));
+            }
+        }
+    }
+
+    @EventListener
+    public void onStepCompleted(StepCompletedEvent event) {
+        TaskExecutionContext context = runningTasks.get(event.getTaskId());
+        if (context != null) {
+            CompletableFuture<Map<String, Object>> future = context.removePendingStep(event.getStepId());
+            if (future != null) {
+                future.complete(Map.of(
+                        "success", event.isSuccess(),
+                        "message", event.getData() != null ? event.getData().get("message") : "",
+                        "data", event.getData() != null ? event.getData() : new HashMap<>()
+                ));
+            }
+        }
+    }
+
+    @EventListener
+    public void onStepFailed(StepFailedEvent event) {
+        TaskExecutionContext context = runningTasks.get(event.getTaskId());
+        if (context != null) {
+            CompletableFuture<Map<String, Object>> future = context.removePendingStep(event.getStepId());
+            if (future != null) {
+                future.completeExceptionally(new RuntimeException(event.getError()));
+            }
+        }
+    }
+
     private RpaStepResult convertToRpaStepResult(StepResult result) {
         RpaStepResult rpaResult = new RpaStepResult();
         rpaResult.setStepId(result.getStepId());
@@ -198,83 +365,6 @@ public class RpaTaskScheduler {
         rpaResult.setErrorMessage(result.getError());
         rpaResult.setExecutionTimeMs(result.getExecutionTimeMs() != null ? result.getExecutionTimeMs() : 0);
         return rpaResult;
-    }
-
-    private StepResult executeStepWithRetry(String executionId, String browserId,
-                                            RpaStep step, TaskExecutionContext context) {
-        int maxRetries = step.getRetryCount() != null ? step.getRetryCount() : 3;
-
-        for (int attempt = 0; attempt < maxRetries; attempt++) {
-            if (context.isCancelled() || !"RUNNING".equals(context.getStatus())) {
-                log.warn("⛔ 任务 [{}] 已停止，中断重试", executionId);
-                return StepResult.fail(step.getStepId(), "任务已取消或完成");
-            }
-
-            try {
-                log.info("🎯 执行步骤 {}: action={}, target={}, value={}",
-                        step.getStepId(), step.getAction(), step.getTarget(),
-                        step.getValue() != null ? (step.getValue().length() > 20 ? step.getValue().substring(0, 20) + "..." : step.getValue()) : "null");
-
-                AgentCommand command = AgentCommand.builder()
-                        .taskId(executionId)
-                        .stepId(String.valueOf(step.getStepId()))
-                        .action(step.getAction())
-                        .target(step.getTarget())
-                        .value(step.getValue())
-                        .timeout(15000)  // 增加超时到15秒
-                        .waitForNavigation(false)
-                        .build();
-
-                CompletableFuture<Map<String, Object>> future = new CompletableFuture<>();
-                context.registerPendingStep(step.getStepId(), future);
-
-                log.info("📤 发送命令到浏览器 [{}]: action={}", browserId, command.getAction());
-                browserHandler.sendCommand(browserId, command);
-                log.info("✅ 命令已发送，等待响应（超时15秒）...");
-
-                Map<String, Object> result = future.get(15, TimeUnit.SECONDS);
-                log.info("📨 收到响应: {}", result);
-
-                boolean success = (boolean) result.get("success");
-                if (success) {
-                    return StepResult.success(step.getStepId(), (String) result.get("message"));
-                } else {
-                    String errorMsg = (String) result.get("error");
-                    throw new RuntimeException(errorMsg != null ? errorMsg : "浏览器返回失败状态");
-                }
-
-            } catch (Exception e) {
-                context.removePendingStep(String.valueOf(step.getStepId()));
-
-                String errorMsg = e.getMessage();
-                if (errorMsg == null || errorMsg.isEmpty()) {
-                    errorMsg = e.getClass().getSimpleName();
-                }
-
-                log.error("❌ 步骤 {} 尝试 {}/{} 失败: {}", step.getStepId(), attempt + 1, maxRetries, errorMsg, e);
-
-                if (attempt < maxRetries - 1) {
-                    long waitMs = (long) Math.pow(2, attempt) * 1000;
-                    log.info("⏳ 等待 {}ms 后重试...", waitMs);
-                    try {
-                        Thread.sleep(waitMs);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        return StepResult.fail(step.getStepId(), "被中断");
-                    }
-
-                    // 尝试备选选择器
-                    if (errorMsg.contains("not found") && step.getFallbackTarget() != null) {
-                        log.info("🔄 尝试备选定位: {}", step.getFallbackTarget());
-                        step.setTarget(step.getFallbackTarget());
-                    }
-                } else {
-                    return StepResult.fail(step.getStepId(), "步骤执行失败（" + (attempt + 1) + "次尝试）: " + errorMsg);
-                }
-            }
-        }
-
-        return StepResult.fail(step.getStepId(), "超过最大重试次数");
     }
 
     private Optional<StepResult> attemptAutoFix(String executionId, String browserId,
@@ -298,103 +388,8 @@ public class RpaTaskScheduler {
             }
         }
 
-        if (shouldReplan(failure)) {
-            log.info("🔄 触发AI动态重规划");
-            List<RpaStep> newPlan = aiParsingService.replanSteps(
-                    context.getTask().getDescription(),
-                    context.getCompletedSteps(),
-                    failure,
-                    context.getCurrentUrl()
-            );
-
-            if (newPlan != null && !newPlan.isEmpty()) {
-                context.replaceRemainingSteps(newPlan);
-                return Optional.of(StepResult.success(failedStep.getStepId(), "已重规划"));
-            }
-        }
-
         return Optional.empty();
     }
-
-    // ==================== 浏览器事件回调方法 ====================
-
-    public void onPageChanged(String browserSessionId, String newUrl) {
-        runningTasks.values().stream()
-                .filter(t -> browserSessionId.equals(t.getBrowserSessionId()))
-                .forEach(t -> t.setCurrentUrl(newUrl));
-    }
-
-    /**
-     * 🆕 新增：处理元素定位结果（BrowserAgentHandler调用）
-     */
-    public void onElementLocated(String taskId, String stepId, boolean found, Map<String, Object> data) {
-        TaskExecutionContext context = runningTasks.get(taskId);
-        if (context != null) {
-            String stepIdStr = stepId != null ? String.valueOf(stepId) : null;
-            if (stepIdStr == null) {
-                log.error("❌ onElementLocated: stepId为null");
-                return;
-            }
-
-            CompletableFuture<Map<String, Object>> future = context.getPendingStep(stepIdStr);
-            if (future != null) {
-                future.complete(Map.of(
-                        "success", found,
-                        "message", found ? "元素已找到" : "元素未找到",
-                        "data", data != null ? data : new HashMap<>()
-                ));
-            } else {
-                log.warn("⚠️ onElementLocated: 未找到待处理的步骤: taskId={}, stepId={}", taskId, stepId);
-            }
-        } else {
-            log.warn("⚠️ onElementLocated: 任务上下文不存在: taskId={}", taskId);
-        }
-    }
-
-    /**
-     * 🆕 新增：处理步骤完成（BrowserAgentHandler调用）
-     */
-    public void onStepCompleted(String taskId, String stepId, boolean success, Map<String, Object> data) {
-        TaskExecutionContext context = runningTasks.get(taskId);
-        if (context != null) {
-            String stepIdStr = stepId != null ? String.valueOf(stepId) : null;
-            if (stepIdStr == null) {
-                log.error("❌ onStepCompleted: stepId为null");
-                return;
-            }
-
-            CompletableFuture<Map<String, Object>> future = context.removePendingStep(stepIdStr);
-            if (future != null) {
-                future.complete(Map.of(
-                        "success", success,
-                        "message", data != null ? data.get("message") : "",
-                        "data", data != null ? data : new HashMap<>()
-                ));
-            } else {
-                log.warn("⚠️ onStepCompleted: 未找到待处理的步骤: taskId={}, stepId={}", taskId, stepId);
-            }
-        } else {
-            log.warn("⚠️ onStepCompleted: 任务上下文不存在: taskId={}", taskId);
-        }
-    }
-
-    /**
-     * 🆕 新增：处理步骤错误（BrowserAgentHandler调用）
-     */
-    public void onStepError(String taskId, String error, Map<String, Object> data) {
-        TaskExecutionContext context = runningTasks.get(taskId);
-        if (context != null) {
-            String stepId = data != null ? String.valueOf(data.get("stepId")) : null;
-            if (stepId != null && !"null".equals(stepId)) {
-                CompletableFuture<Map<String, Object>> future = context.removePendingStep(stepId);
-                if (future != null) {
-                    future.completeExceptionally(new RuntimeException(error != null ? error : "未知错误"));
-                }
-            }
-        }
-    }
-
-    // ==================== 工具方法 ====================
 
     private boolean isPageTransitionStep(RpaStep step) {
         return "open_url".equals(step.getAction()) || "click".equals(step.getAction());
@@ -406,12 +401,6 @@ public class RpaTaskScheduler {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-    }
-
-    private boolean shouldReplan(StepResult failure) {
-        return failure.getError() != null &&
-                (failure.getError().contains("流程中断") ||
-                        failure.getError().contains("页面结构变化"));
     }
 
     private RpaStep applyKnowledgeFix(RpaStep original, String solution) {
@@ -430,6 +419,7 @@ public class RpaTaskScheduler {
 
         fixed.setValue(original.getValue());
         fixed.setWaitTime(original.getWaitTime());
+        fixed.setImageTemplate(original.getImageTemplate());
         return fixed;
     }
 
