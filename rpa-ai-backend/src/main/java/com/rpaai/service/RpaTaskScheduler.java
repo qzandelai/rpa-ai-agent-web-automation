@@ -40,6 +40,9 @@ public class RpaTaskScheduler {
     @Autowired
     private ImageLocatorService imageLocatorService;
 
+    @Autowired
+    private DataExportService dataExportService;
+
     private final PriorityBlockingQueue<ScheduledTask> taskQueue =
             new PriorityBlockingQueue<>(100, Comparator.comparingInt(ScheduledTask::getPriority).reversed());
 
@@ -167,6 +170,11 @@ public class RpaTaskScheduler {
                     } else {
                         throw new RuntimeException("步骤执行失败且无法修复: " + result.getError());
                     }
+                } else {
+                    // 如果是extract操作且成功，保存提取的数据
+                    if ("extract".equals(step.getAction())) {
+                        saveExtractedData(executionId, task, context, step, result);
+                    }
                 }
 
                 context.getCompletedSteps().add(result);
@@ -188,6 +196,109 @@ public class RpaTaskScheduler {
         } finally {
             runningTasks.remove(executionId);
             executionLogService.finishExecution(executionLog, finalResult, null);
+        }
+    }
+
+    /**
+     * 保存提取的数据到MongoDB（Fastjson2兼容版）
+     */
+    private void saveExtractedData(String executionId, AutomationTask task, TaskExecutionContext context,
+                                   RpaStep step, StepResult result) {
+        try {
+            String extractedData = result.getMessage();
+            if (extractedData == null || extractedData.trim().isEmpty()) {
+                log.warn("⚠️ 步骤 {} 提取的数据为空，跳过保存", step.getStepId());
+                return;
+            }
+
+            List<String> headers;
+            List<Map<String, Object>> rows = new ArrayList<>();
+
+            try {
+                String data = extractedData.trim();
+
+                if (data.startsWith("{")) {
+                    // 单个 JSON 对象
+                    com.alibaba.fastjson2.JSONObject json = com.alibaba.fastjson2.JSON.parseObject(data);
+                    headers = new ArrayList<>(json.keySet());
+
+                    Map<String, Object> row = new HashMap<>();
+                    for (String key : json.keySet()) {
+                        row.put(key, json.get(key));
+                    }
+                    rows.add(row);
+                    log.info("📊 解析为单个JSON对象，字段数: {}", headers.size());
+
+                } else if (data.startsWith("[")) {
+                    // JSON 数组
+                    com.alibaba.fastjson2.JSONArray array = com.alibaba.fastjson2.JSON.parseArray(data);
+                    if (!array.isEmpty()) {
+                        Object first = array.get(0);
+                        if (first instanceof com.alibaba.fastjson2.JSONObject) {
+                            com.alibaba.fastjson2.JSONObject firstObj = (com.alibaba.fastjson2.JSONObject) first;
+                            headers = new ArrayList<>(firstObj.keySet());
+
+                            for (int i = 0; i < array.size(); i++) {
+                                com.alibaba.fastjson2.JSONObject obj = array.getJSONObject(i);
+                                Map<String, Object> row = new HashMap<>();
+                                for (String key : obj.keySet()) {
+                                    row.put(key, obj.get(key));
+                                }
+                                rows.add(row);
+                            }
+                            log.info("📊 解析为JSON数组，共 {} 条", rows.size());
+                        } else {
+                            // 简单值数组
+                            headers = Arrays.asList("value", "index");
+                            for (int i = 0; i < array.size(); i++) {
+                                Map<String, Object> row = new HashMap<>();
+                                row.put("value", array.get(i));
+                                row.put("index", i);
+                                rows.add(row);
+                            }
+                            log.info("📊 解析为简单数组，共 {} 条", rows.size());
+                        }
+                    } else {
+                        headers = Arrays.asList("content");
+                        Map<String, Object> row = new HashMap<>();
+                        row.put("content", "空数组");
+                        rows.add(row);
+                    }
+
+                } else {
+                    // 纯文本
+                    headers = Arrays.asList("content", "source_url", "extract_time");
+                    Map<String, Object> row = new HashMap<>();
+                    row.put("content", data);
+                    row.put("source_url", context.getCurrentUrl());
+                    row.put("extract_time", java.time.LocalDateTime.now().toString());
+                    rows.add(row);
+                    log.info("📄 存储为纯文本，长度: {}", data.length());
+                }
+
+            } catch (Exception e) {
+                log.warn("JSON解析失败，按纯文本存储: {}", e.getMessage());
+                headers = Arrays.asList("content", "source_url", "selector");
+                Map<String, Object> row = new HashMap<>();
+                row.put("content", extractedData);
+                row.put("source_url", context.getCurrentUrl());
+                row.put("selector", step.getTarget());
+                rows.add(row);
+            }
+
+            dataExportService.saveExtractedData(
+                    task.getId(),
+                    task.getTaskName(),
+                    executionId,
+                    context.getCurrentUrl(),
+                    step.getTarget(),
+                    headers,
+                    rows
+            );
+            log.info("💾 提取的数据已保存到MongoDB，任务: {}，共 {} 条记录", executionId, rows.size());
+
+        } catch (Exception e) {
+            log.error("❌ 保存提取数据失败（不影响主流程）: {}", e.getMessage());
         }
     }
 
