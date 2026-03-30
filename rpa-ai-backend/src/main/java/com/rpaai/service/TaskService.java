@@ -1,14 +1,23 @@
-// TaskService.java（接口也需要更新）
 package com.rpaai.service;
 
 import com.rpaai.entity.AutomationTask;
 
+/**
+ * 任务服务接口 - 修改版
+ * 位置：src/main/java/com/rpaai/service/TaskService.java
+ */
 public interface TaskService {
-    AutomationTask parseNaturalLanguageTask(String naturalLanguage);
+
+    /**
+     * 🆕 修改：增加凭据ID参数
+     */
+    AutomationTask parseWithAI(String naturalLanguage, Long credentialsId);
+
     AutomationTask saveTask(AutomationTask task);
+
     AutomationTask getTaskById(Long id);
 
-    // 🆕 新增接口方法
     String submitTaskToScheduler(Long taskId, String userId, TaskPriority priority);
+
     String executeImmediately(Long taskId, String userId);
 }

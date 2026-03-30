@@ -13,6 +13,7 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -71,7 +72,7 @@ public class BrowserAgentHandler extends TextWebSocketHandler {
         String userId = (String) data.get("userId");
         String fingerprint = (String) data.get("fingerprint");
 
-        log.info("📝 收到注册请求: userId={}, fingerprint={}", userId, fingerprint);  // 添加日志
+        log.info("📝 收到注册请求: userId={}, fingerprint={}", userId, fingerprint);
 
         if (userId == null || userId.isEmpty()) {
             userId = "anonymous";
@@ -112,23 +113,43 @@ public class BrowserAgentHandler extends TextWebSocketHandler {
         );
     }
 
+    /**
+     * 🆕 关键修复：正确处理ACTION_RESULT
+     * 从 msg 中获取 taskId 和 stepId，而不是从 data 中
+     */
     private void handleActionResult(WebSocketSession session, WebSocketMessage msg) {
+        // 关键修复：从 msg 中获取，不是从 data 中获取
+        String taskId = msg.getTaskId();
+        String stepId = msg.getStepId();
         Map<String, Object> data = msg.getData();
-        rpaTaskScheduler.onStepCompleted(
-                (String) data.get("taskId"),
-                (String) data.get("stepId"),
-                (boolean) data.get("success"),
-                data
-        );
+
+        if (taskId == null) {
+            log.error("❌ ACTION_RESULT缺少taskId: {}", msg);
+            return;
+        }
+        if (stepId == null) {
+            log.error("❌ ACTION_RESULT缺少stepId: {}", msg);
+            return;
+        }
+
+        Boolean success = data != null ? (Boolean) data.get("success") : null;
+        if (success == null) {
+            success = false;
+        }
+
+        log.info("✅ 处理动作结果: taskId={}, stepId={}, success={}", taskId, stepId, success);
+
+        rpaTaskScheduler.onStepCompleted(taskId, stepId, success, data);
     }
 
     private void handleBrowserError(WebSocketSession session, WebSocketMessage msg) {
         Map<String, Object> data = msg.getData();
-        rpaTaskScheduler.onStepError(
-                (String) data.get("taskId"),
-                (String) data.get("error"),
-                data
-        );
+        String taskId = data != null ? (String) data.get("taskId") : null;
+        String error = data != null ? (String) data.get("error") : "未知错误";
+
+        if (taskId != null) {
+            rpaTaskScheduler.onStepError(taskId, error, data);
+        }
     }
 
     private void handleHeartbeat(WebSocketSession session, WebSocketMessage msg) {
@@ -149,23 +170,44 @@ public class BrowserAgentHandler extends TextWebSocketHandler {
 
     public void sendCommand(String browserSessionId, AgentCommand command) {
         WebSocketSession session = browserSessions.get(browserSessionId);
-        if (session == null || !session.isOpen()) {
-            throw new RuntimeException("浏览器会话不存在或已关闭: " + browserSessionId);
+
+        log.info("📤 准备发送指令到 [{}], session存在: {}, session开放: {}",
+                browserSessionId,
+                session != null,
+                session != null ? session.isOpen() : "N/A");
+
+        if (session == null) {
+            throw new RuntimeException("浏览器会话不存在: " + browserSessionId);
         }
+
+        if (!session.isOpen()) {
+            throw new RuntimeException("浏览器会话已关闭: " + browserSessionId);
+        }
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("action", command.getAction());
+        data.put("target", command.getTarget());
+        data.put("value", command.getValue());
+        data.put("timeout", command.getTimeout() != null ? command.getTimeout() : 10000);
+        data.put("waitForNavigation", command.getWaitForNavigation() != null ? command.getWaitForNavigation() : false);
+        // 关键修复：添加taskId和stepId到data
+        data.put("taskId", command.getTaskId());
+        data.put("stepId", command.getStepId());
 
         WebSocketMessage msg = WebSocketMessage.builder()
                 .type("EXECUTE_COMMAND")
                 .taskId(command.getTaskId())
                 .stepId(command.getStepId())
-                .data(Map.of(
-                        "action", command.getAction(),
-                        "target", command.getTarget(),
-                        "value", command.getValue(),
-                        "timeout", command.getTimeout()
-                ))
+                .data(data)
                 .build();
 
-        sendMessage(session, msg);
+        try {
+            session.sendMessage(new TextMessage(JSON.toJSONString(msg)));
+            log.info("✅ 指令已发送 [{}]: {} -> {}", browserSessionId, command.getAction(), command.getTarget());
+        } catch (Exception e) {
+            log.error("❌ 发送指令失败: {}", e.getMessage(), e);
+            throw new RuntimeException("发送指令失败: " + e.getMessage(), e);
+        }
     }
 
     private void sendMessage(WebSocketSession session, WebSocketMessage message) {

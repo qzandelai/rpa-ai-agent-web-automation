@@ -25,9 +25,11 @@ public class TaskExecutionContext {
     private String currentUrl;
     private volatile boolean cancelled = false;
 
+    // 关键修复：使用String作为key，统一类型
     private Map<String, CompletableFuture<Map<String, Object>>> pendingSteps = new ConcurrentHashMap<>();
 
     public void registerPendingStep(Integer stepId, CompletableFuture<Map<String, Object>> future) {
+        // 统一转为字符串作为key
         pendingSteps.put(String.valueOf(stepId), future);
     }
 

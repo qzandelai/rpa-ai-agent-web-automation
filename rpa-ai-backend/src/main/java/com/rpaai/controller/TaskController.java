@@ -2,28 +2,45 @@ package com.rpaai.controller;
 
 import com.rpaai.entity.AutomationTask;
 import com.rpaai.service.TaskService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
+/**
+ * 任务管理接口 - 修改版
+ * 位置：src/main/java/com/rpaai/controller/TaskController.java
+ */
+@Slf4j
 @RestController
 @RequestMapping("/api/tasks")
-@CrossOrigin(origins = "*")  // ✅ 必须添加，允许所有来源
+@CrossOrigin(origins = "*")
 public class TaskController {
 
     @Autowired
     private TaskService taskService;
 
+    /**
+     * 🆕 修改：支持凭据ID参数
+     * POST /api/tasks/parse
+     * 请求体：{ "description": "登录github", "credentialsId": 1 }
+     */
     @PostMapping("/parse")
-    public ResponseEntity<AutomationTask> parseTask(
-            @RequestBody String naturalLanguage) {  // ✅ 接收纯文本
-        AutomationTask task = taskService.parseNaturalLanguageTask(naturalLanguage);
+    public ResponseEntity<AutomationTask> parseTask(@RequestBody Map<String, Object> request) {
+        String naturalLanguage = (String) request.get("description");
+        Long credentialsId = request.get("credentialsId") != null ?
+                Long.valueOf(request.get("credentialsId").toString()) : null;
+
+        log.info("📝 解析任务: {}, 凭据ID: {}", naturalLanguage, credentialsId);
+
+        AutomationTask task = taskService.parseWithAI(naturalLanguage, credentialsId);
         return ResponseEntity.ok(task);
     }
 
     @PostMapping("/save")
-    public ResponseEntity<AutomationTask> saveTask(
-            @RequestBody AutomationTask task) {
+    public ResponseEntity<AutomationTask> saveTask(@RequestBody AutomationTask task) {
         AutomationTask saved = taskService.saveTask(task);
         return ResponseEntity.ok(saved);
     }
@@ -36,6 +53,6 @@ public class TaskController {
 
     @GetMapping("/health")
     public ResponseEntity<String> health() {
-        return ResponseEntity.ok("✅ RPA+AI Agent Backend is running on JDK 17");
+        return ResponseEntity.ok("✅ RPA+AI Agent Backend is running");
     }
 }

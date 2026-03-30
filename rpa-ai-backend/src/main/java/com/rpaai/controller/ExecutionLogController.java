@@ -32,8 +32,10 @@ public class ExecutionLogController {
      */
     @GetMapping("/recent")
     public ResponseEntity<List<ExecutionLogDocument>> getRecentLogs(
-            @RequestParam(defaultValue = "20") int limit) {
-        return ResponseEntity.ok(logService.getRecentExecutions(limit));
+            @RequestParam(defaultValue = "100") int limit) {  // 默认100条，最多1000
+        // 限制最大数量防止内存溢出
+        int safeLimit = Math.min(limit, 1000);
+        return ResponseEntity.ok(logService.getRecentExecutions(safeLimit));
     }
 
     /**

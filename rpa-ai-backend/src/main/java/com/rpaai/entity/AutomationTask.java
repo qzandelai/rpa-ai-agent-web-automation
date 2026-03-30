@@ -4,10 +4,15 @@ import lombok.Data;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
+/**
+ * 自动化任务实体 - 修改版
+ * 位置：src/main/java/com/rpaai/entity/AutomationTask.java
+ */
 @Data
 @Entity
 @Table(name = "automation_task")
 public class AutomationTask {
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -31,12 +36,26 @@ public class AutomationTask {
     @Column(name = "update_time")
     private LocalDateTime updateTime = LocalDateTime.now();
 
-    // ✅ 关键修改：明确指定为 LONGTEXT 类型
     @Lob
     @Column(name = "config_json", columnDefinition = "LONGTEXT")
     private String configJson;
 
-    // ✅ 新增：添加更新时间的自动更新
+    // ==================== 新增字段 ====================
+
+    /**
+     * 关联的凭据ID
+     */
+    @Column(name = "credentials_id")
+    private Long credentialsId;
+
+    /**
+     * 是否需要凭据 Y/N
+     */
+    @Column(name = "need_credentials", length = 1)
+    private String needCredentials = "N";
+
+    // ==================== 新增字段结束 ====================
+
     @PreUpdate
     public void preUpdate() {
         this.updateTime = LocalDateTime.now();

@@ -33,26 +33,29 @@ public class ExecutionController {
         log.info("收到任务提交请求，任务ID: {}", taskId);
 
         try {
-            // 检查是否有可用的浏览器会话
+            // 检查浏览器连接
             var sessions = browserSessionManager.getAllSessions();
             if (sessions.isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.of(
                         "error", "没有可用的浏览器扩展连接",
-                        "message", "请确保Chrome扩展已安装并连接",
-                        "solution", "1. 打开Chrome扩展 2. 确保显示'已连接'"
+                        "message", "请确保Chrome扩展已安装并连接"
                 ));
             }
+
             String executionId = taskService.submitTaskToScheduler(taskId, userId, TaskPriority.NORMAL);
 
+            // 关键：立即返回执行ID，不要等待执行完成
             return ResponseEntity.ok(Map.of(
                     "executionId", executionId,
                     "status", "QUEUED",
-                    "message", "任务已加入队列，等待浏览器连接"
+                    "message", "任务已提交，正在执行"
             ));
+
         } catch (Exception e) {
             log.error("提交任务失败", e);
             return ResponseEntity.badRequest().body(Map.of(
-                    "error", e.getMessage()
+                    "error", e.getMessage(),
+                    "timestamp", System.currentTimeMillis()
             ));
         }
     }
