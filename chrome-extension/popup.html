@@ -1,0 +1,104 @@
+<!-- chrome-extension/popup.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            width: 300px;
+            padding: 15px;
+            font-family: 'Segoe UI', Arial, sans-serif;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #409EFF;
+            padding-bottom: 10px;
+        }
+        .status {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 6px;
+            background: #f5f7fa;
+        }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ccc;
+        }
+        .status-dot.connected {
+            background: #67C23A;
+            box-shadow: 0 0 5px #67C23A;
+        }
+        .status-dot.disconnected {
+            background: #F56C6C;
+        }
+        .info-item {
+            margin: 8px 0;
+            font-size: 12px;
+            color: #606266;
+        }
+        .btn {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .btn-primary {
+            background: #409EFF;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #66b1ff;
+        }
+        .btn-warning {
+            background: #E6A23C;
+            color: white;
+        }
+        .task-info {
+            margin-top: 10px;
+            padding: 10px;
+            background: #f0f9ff;
+            border-radius: 4px;
+            border-left: 4px solid #409EFF;
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h3>🚀 RPA AI Agent</h3>
+        <div>浏览器远程控制器</div>
+    </div>
+    
+    <div class="status">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">连接中...</span>
+    </div>
+    
+    <div id="connectionInfo" class="info-item">
+        等待连接服务器...
+    </div>
+    
+    <div id="currentTask" class="task-info hidden">
+        <strong>正在执行:</strong>
+        <div id="taskDetails">-</div>
+    </div>
+    
+    <button class="btn btn-primary" id="reconnectBtn">重新连接</button>
+    <button class="btn btn-warning" id="settingsBtn">设置</button>
+    
+    <script src="popup.js"></script>
+</body>
+</html>
