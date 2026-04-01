@@ -7,6 +7,7 @@ import com.rpaai.entity.mongodb.ExecutionLogDocument;
 import com.rpaai.repository.mongodb.ExecutionLogRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -113,10 +114,7 @@ public class ExecutionLogService {
      * 获取最近执行记录
      */
     public List<ExecutionLogDocument> getRecentExecutions(int limit) {
-        return logRepository.findTop20ByOrderByStartTimeDesc()
-                .stream()
-                .limit(limit)
-                .collect(Collectors.toList());
+        return logRepository.findByOrderByStartTimeDesc(PageRequest.of(0, limit));
     }
 
     /**

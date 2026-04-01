@@ -23,6 +23,9 @@ public class AiParsingService {
     @Autowired
     private CredentialsService credentialsService;
 
+    @Autowired(required = false)
+    private KnowledgeGraphService knowledgeGraphService;
+
     /**
      * 带凭据的任务解析
      */
@@ -48,6 +51,9 @@ public class AiParsingService {
             if (credentialsId != null) {
                 steps = injectCredentialsPlaceholder(steps, credentialsId);
             }
+
+            // 用知识图谱 enrich 步骤（注入成功经验和图像模板）
+            steps = enrichStepsWithKnowledge(steps, naturalLanguage);
 
             // 构建任务对象
             AutomationTask task = new AutomationTask();
@@ -184,6 +190,53 @@ public class AiParsingService {
         copy.setImageTemplate(source.getImageTemplate());  // 复制图像模板
         copy.setImageThreshold(source.getImageThreshold());
         return copy;
+    }
+
+    /**
+     * 用知识图谱 enrich 步骤：注入 fallbackTarget 和图像模板
+     */
+    private List<RpaStep> enrichStepsWithKnowledge(List<RpaStep> steps, String naturalLanguage) {
+        if (knowledgeGraphService == null || steps == null || steps.isEmpty()) {
+            return steps;
+        }
+
+        for (RpaStep step : steps) {
+            if (!"click".equals(step.getAction()) && !"input".equals(step.getAction())) {
+                continue;
+            }
+
+            // 推断页面类型：优先从 open_url 步骤找目标 URL，否则从描述或自然语言推断
+            String pageType = inferPageTypeForStep(steps, step, naturalLanguage);
+
+            var patternOpt = knowledgeGraphService.findPattern(pageType, step.getAction());
+            if (patternOpt.isPresent()) {
+                var pat = patternOpt.get();
+                if (pat.getSuccessRate() != null && pat.getSuccessRate() >= 0.8) {
+                    if (step.getFallbackTarget() == null || step.getFallbackTarget().isEmpty()) {
+                        step.setFallbackTarget(pat.getSuccessfulSelector());
+                        log.info("📚 知识图谱注入 fallbackTarget: {} → {}", step.getDescription(), pat.getSuccessfulSelector());
+                    }
+                    if (pat.getImageTemplate() != null && !pat.getImageTemplate().isEmpty()) {
+                        step.setImageTemplate(pat.getImageTemplate());
+                        step.setImageThreshold(pat.getImageThreshold() != null ? pat.getImageThreshold() : 0.8);
+                        log.info("📚 知识图谱注入图像模板: {}", step.getDescription());
+                    }
+                }
+            }
+        }
+        return steps;
+    }
+
+    private String inferPageTypeForStep(List<RpaStep> steps, RpaStep currentStep, String naturalLanguage) {
+        // 找当前步骤之前的最后一个 open_url
+        for (int i = steps.indexOf(currentStep) - 1; i >= 0; i--) {
+            RpaStep s = steps.get(i);
+            if ("open_url".equals(s.getAction()) && s.getTarget() != null) {
+                return knowledgeGraphService.inferPageType(s.getTarget());
+            }
+        }
+        //  fallback：用自然语言推断
+        return knowledgeGraphService.inferPageType(naturalLanguage);
     }
 
     /**
@@ -428,6 +481,22 @@ public class AiParsingService {
             steps.append(String.format("{\"stepId\":%d,\"action\":\"wait\",\"waitTime\":2,\"description\":\"等待输入完成\"}", stepId++));
             steps.append(",");
             steps.append(String.format("{\"stepId\":%d,\"action\":\"click\",\"target\":\"input[type=\\\"submit\\\"][name=\\\"commit\\\"]\",\"description\":\"点击登录按钮\"}", stepId++));
+            steps.append(",");
+            steps.append(String.format("{\"stepId\":%d,\"action\":\"wait\",\"waitTime\":3,\"description\":\"等待登录跳转\"}", stepId++));
+            
+            // 如果包含搜索意图，添加搜索步骤
+            if (lowerInput.contains("搜索") || lowerInput.contains("search") || lowerInput.contains("找")) {
+                String keyword = naturalLanguage.replaceAll("(?i)github|登录|搜索|search|查找|教程", "").trim();
+                steps.append(",");
+                steps.append(String.format("{\"stepId\":%d,\"action\":\"click\",\"target\":\"input[name='q'],.header-search-input,#query-builder-test,input[type='text']\",\"description\":\"点击GitHub搜索框\"}", stepId++));
+                steps.append(",");
+                steps.append(String.format("{\"stepId\":%d,\"action\":\"input\",\"target\":\"input[name='q'],.header-search-input,#query-builder-test,input[type='text']\",\"value\":\"%s\",\"description\":\"输入搜索关键词\"}",
+                        stepId++, keyword));
+                steps.append(",");
+                steps.append(String.format("{\"stepId\":%d,\"action\":\"submit\",\"target\":\"form[role='search'] button[type='submit'],.header-search-submit,input[type='submit'][value='Search']\",\"description\":\"提交搜索\"}", stepId++));
+                steps.append(",");
+                steps.append(String.format("{\"stepId\":%d,\"action\":\"wait\",\"waitTime\":3,\"description\":\"等待搜索结果\"}", stepId++));
+            }
         } else if (lowerInput.contains("百度")) {
             steps.append(String.format("{\"stepId\":%d,\"action\":\"open_url\",\"target\":\"https://www.baidu.com\",\"description\":\"打开百度首页\"}", stepId++));
             steps.append(",");

@@ -35,6 +35,12 @@ public class ElementPattern {
     @Property("lastSuccessTime")
     private LocalDateTime lastSuccessTime;
 
+    @Property("imageTemplate")
+    private String imageTemplate;  // 视觉定位模板（base64）
+
+    @Property("imageThreshold")
+    private Double imageThreshold; // 匹配阈值
+
     public ElementPattern() {
         this.id = "PAT_" + System.currentTimeMillis();
     }

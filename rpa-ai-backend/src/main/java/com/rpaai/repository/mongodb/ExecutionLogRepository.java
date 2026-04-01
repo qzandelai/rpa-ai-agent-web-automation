@@ -1,6 +1,7 @@
 package com.rpaai.repository.mongodb;
 
 import com.rpaai.entity.mongodb.ExecutionLogDocument;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.mongodb.repository.MongoRepository;
 import org.springframework.stereotype.Repository;
 
@@ -16,9 +17,14 @@ public interface ExecutionLogRepository extends MongoRepository<ExecutionLogDocu
     List<ExecutionLogDocument> findByTaskIdOrderByStartTimeDesc(Long taskId);
 
     /**
-     * 查询最近的执行记录
+     * 查询最近的执行记录（固定20条）
      */
     List<ExecutionLogDocument> findTop20ByOrderByStartTimeDesc();
+
+    /**
+     * 查询最近的执行记录（支持动态数量）
+     */
+    List<ExecutionLogDocument> findByOrderByStartTimeDesc(Pageable pageable);
 
     /**
      * 查询成功的记录

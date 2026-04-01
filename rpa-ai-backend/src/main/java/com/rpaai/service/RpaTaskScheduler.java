@@ -35,6 +35,9 @@ public class RpaTaskScheduler {
     private KnowledgeGraphService knowledgeGraphService;
 
     @Autowired
+    private AiAutoFixService aiAutoFixService;
+
+    @Autowired
     private ExecutionLogService executionLogService;
 
     @Autowired
@@ -42,6 +45,9 @@ public class RpaTaskScheduler {
 
     @Autowired
     private DataExportService dataExportService;
+
+    @Autowired
+    private RealTimeMonitorService monitorService;  // 实时监控服务
 
     private final PriorityBlockingQueue<ScheduledTask> taskQueue =
             new PriorityBlockingQueue<>(100, Comparator.comparingInt(ScheduledTask::getPriority).reversed());
@@ -64,6 +70,21 @@ public class RpaTaskScheduler {
 
         taskQueue.offer(scheduledTask);
         log.info("📥 任务已提交 [{}]: {}, 优先级={}", executionId, task.getTaskName(), priority);
+
+        // 关键：立即广播队列更新，包含任务基本信息
+        List<Map<String, Object>> queueList = taskQueue.stream()
+                .map(t -> {
+                    Map<String, Object> map = new HashMap<>();
+                    map.put("executionId", t.getExecutionId());
+                    map.put("status", t.getStatus());
+                    map.put("priority", t.getPriority());
+                    map.put("submitTime", t.getSubmitTime());
+                    map.put("taskName", t.getTask().getTaskName());  // 添加任务名
+                    return map;
+                })
+                .collect(Collectors.toList());
+
+        monitorService.notifyQueueUpdate(queueList);
 
         tryScheduleTasks();
 
@@ -135,6 +156,9 @@ public class RpaTaskScheduler {
 
         runningTasks.put(executionId, context);
 
+        // 🔔 广播任务开始
+        monitorService.notifyExecutionStart(executionId, task, steps.size());
+
         RpaExecutionResult finalResult = new RpaExecutionResult();
         finalResult.setTotalSteps(steps.size());
         finalResult.setStepResults(new ArrayList<>());
@@ -148,11 +172,14 @@ public class RpaTaskScheduler {
                 }
 
                 RpaStep step = steps.get(i);
-                context.setCurrentStepIndex(i);
+                context.setCurrentStepIndex(i + 1);
 
                 if (i > 0 && isPageTransitionStep(step)) {
                     waitForPageStable(browserId, 2000);
                 }
+
+                // 🔔 广播步骤开始
+                monitorService.notifyStepStart(executionId, i + 1, step);
 
                 StepResult result = executeStepWithRetry(executionId, browserId, step, context);
 
@@ -167,10 +194,17 @@ public class RpaTaskScheduler {
                         stepResult = convertToRpaStepResult(result);
                         finalResult.getStepResults().set(i, stepResult);
                         executionLogService.recordStep(executionLog, i, stepResult);
+                        // 🔔 广播修复后完成
+                        monitorService.notifyStepComplete(executionId, i + 1,
+                                step.getDescription() + " 完成(自动修复)", result.getMessage());
                     } else {
                         throw new RuntimeException("步骤执行失败且无法修复: " + result.getError());
                     }
                 } else {
+                    // 🔔 广播步骤完成
+                    monitorService.notifyStepComplete(executionId, i + 1,
+                            step.getDescription() + " 完成", result.getMessage());
+
                     // 如果是extract操作且成功，保存提取的数据
                     if ("extract".equals(step.getAction())) {
                         saveExtractedData(executionId, task, context, step, result);
@@ -184,7 +218,28 @@ public class RpaTaskScheduler {
             context.setStatus("COMPLETED");
             finalResult.setSuccess(true);
             finalResult.setCompletedSteps(steps.size());
+
+            // 🔔 广播任务完成
+            monitorService.notifyExecutionComplete(executionId, true,
+                    "任务执行成功，共 " + steps.size() + " 步", steps.size());
+
             log.info("🎉 任务 [{}] 执行完成，共 {} 步", executionId, steps.size());
+
+            // 记录成功的元素模式到知识图谱
+            for (RpaStep step : steps) {
+                if ("click".equals(step.getAction()) || "input".equals(step.getAction())) {
+                    List<String> alternatives = new ArrayList<>();
+                    if (step.getFallbackTarget() != null) alternatives.add(step.getFallbackTarget());
+                    knowledgeGraphService.recordElementPattern(
+                            context.getCurrentUrl(),
+                            step.getAction(),
+                            step.getTarget(),
+                            alternatives,
+                            step.getImageTemplate(),
+                            step.getImageThreshold()
+                    );
+                }
+            }
 
         } catch (Exception e) {
             context.setStatus("FAILED");
@@ -192,10 +247,17 @@ public class RpaTaskScheduler {
             finalResult.setSuccess(false);
             finalResult.setErrorMessage(e.getMessage());
             finalResult.setCompletedSteps(context.getCurrentStepIndex());
+
+            // 🔔 广播任务失败
+            monitorService.notifyExecutionComplete(executionId, false,
+                    "任务失败: " + e.getMessage(), context.getCurrentStepIndex());
+
             log.error("❌ 任务 [{}] 执行失败: {}", executionId, e.getMessage());
         } finally {
             runningTasks.remove(executionId);
             executionLogService.finishExecution(executionLog, finalResult, null);
+            // 🔔 广播队列更新
+            monitorService.notifyQueueUpdate(new ArrayList<>(taskQueue));
         }
     }
 
@@ -314,12 +376,17 @@ public class RpaTaskScheduler {
             try {
                 log.info("🎯 执行步骤 {}: action={}, target={}", step.getStepId(), step.getAction(), step.getTarget());
 
+                String commandValue = step.getValue();
+                if ("wait".equals(step.getAction()) && step.getWaitTime() != null) {
+                    commandValue = String.valueOf(step.getWaitTime());
+                }
+                
                 AgentCommand command = AgentCommand.builder()
                         .taskId(executionId)
                         .stepId(String.valueOf(step.getStepId()))
                         .action(step.getAction())
                         .target(step.getTarget())
-                        .value(step.getValue())
+                        .value(commandValue)
                         .timeout(15000)
                         .waitForNavigation(false)
                         .build();
@@ -351,7 +418,9 @@ public class RpaTaskScheduler {
                         return StepResult.fail(step.getStepId(), "被中断");
                     }
 
-                    if (e.getMessage() != null && e.getMessage().contains("not found")
+                    // 最后一次重试前尝试图像识别
+                    if (e.getMessage() != null
+                            && (e.getMessage().contains("not found") || e.getMessage().contains("未找到"))
                             && step.getImageTemplate() != null && attempt == maxRetries - 2) {
                         log.info("🖼️ 尝试使用图像识别定位元素");
                         Optional<StepResult> imageResult = attemptImageLocation(executionId, browserId, step, context);
@@ -375,47 +444,83 @@ public class RpaTaskScheduler {
     private Optional<StepResult> attemptImageLocation(String executionId, String browserId,
                                                       RpaStep step, TaskExecutionContext context) {
         try {
+            log.info("🖼️ 尝试图像识别定位元素: stepId={}", step.getStepId());
+
+            // 先获取当前滚动位置（用于后续坐标转换）
+            AgentCommand scrollCmd = AgentCommand.builder()
+                    .taskId(executionId)
+                    .stepId(String.valueOf(step.getStepId()))
+                    .action("get_scroll_position")
+                    .timeout(5000)
+                    .build();
+
+            CompletableFuture<Map<String, Object>> scrollFuture = new CompletableFuture<>();
+            context.registerPendingStep(step.getStepId(), scrollFuture);
+            browserHandler.sendCommand(browserId, scrollCmd);
+
+            Map<String, Object> scrollResult = scrollFuture.get(5, TimeUnit.SECONDS);
+            int scrollX = scrollResult.get("scrollX") != null ? ((Number) scrollResult.get("scrollX")).intValue() : 0;
+            int scrollY = scrollResult.get("scrollY") != null ? ((Number) scrollResult.get("scrollY")).intValue() : 0;
+
+            // 截图
             AgentCommand screenshotCmd = AgentCommand.builder()
                     .taskId(executionId)
                     .stepId(String.valueOf(step.getStepId()))
                     .action("screenshot")
-                    .timeout(5000)
+                    .timeout(10000) // 增加超时时间
                     .build();
 
             CompletableFuture<Map<String, Object>> future = new CompletableFuture<>();
             context.registerPendingStep(step.getStepId(), future);
             browserHandler.sendCommand(browserId, screenshotCmd);
 
-            Map<String, Object> result = future.get(5, TimeUnit.SECONDS);
+            Map<String, Object> result = future.get(10, TimeUnit.SECONDS);
             String base64Image = (String) result.get("imageData");
 
-            if (base64Image != null) {
-                Optional<int[]> coordinates = imageLocatorService.locateElement(base64Image, step.getImageTemplate());
+            if (base64Image == null || base64Image.isEmpty()) {
+                log.error("截图返回为空");
+                return Optional.empty();
+            }
 
-                if (coordinates.isPresent()) {
-                    int[] xy = coordinates.get();
-                    log.info("🖼️ 图像识别成功，坐标: ({}, {})", xy[0], xy[1]);
+            log.info("截图成功，开始匹配模板...");
 
-                    AgentCommand clickCmd = AgentCommand.builder()
-                            .taskId(executionId)
-                            .stepId(String.valueOf(step.getStepId()))
-                            .action("click_by_coordinates")
-                            .target(xy[0] + "," + xy[1])
-                            .timeout(5000)
-                            .build();
+            // 执行匹配
+            Optional<int[]> coordinates = imageLocatorService.locateElement(base64Image, step.getImageTemplate());
 
-                    CompletableFuture<Map<String, Object>> clickFuture = new CompletableFuture<>();
-                    context.registerPendingStep(step.getStepId(), clickFuture);
-                    browserHandler.sendCommand(browserId, clickCmd);
+            if (coordinates.isPresent()) {
+                int[] xy = coordinates.get();
+                log.info("🖼️ 图像匹配成功，绝对坐标: ({}, {})，滚动偏移: ({}, {})",
+                        xy[0], xy[1], scrollX, scrollY);
 
-                    Map<String, Object> clickResult = clickFuture.get(5, TimeUnit.SECONDS);
-                    if ((boolean) clickResult.get("success")) {
-                        return Optional.of(StepResult.success(step.getStepId(), "通过图像识别定位并点击成功"));
-                    }
+                // 转换为视口坐标（减去滚动偏移）
+                int viewportX = xy[0] - scrollX;
+                int viewportY = xy[1] - scrollY;
+
+                log.info("转换后的视口坐标: ({}, {})", viewportX, viewportY);
+
+                // 执行点击（使用坐标）
+                AgentCommand clickCmd = AgentCommand.builder()
+                        .taskId(executionId)
+                        .stepId(String.valueOf(step.getStepId()))
+                        .action("click_by_coordinates")
+                        .target(viewportX + "," + viewportY) // 使用视口坐标
+                        .timeout(5000)
+                        .build();
+
+                CompletableFuture<Map<String, Object>> clickFuture = new CompletableFuture<>();
+                context.registerPendingStep(step.getStepId(), clickFuture);
+                browserHandler.sendCommand(browserId, clickCmd);
+
+                Map<String, Object> clickResult = clickFuture.get(5, TimeUnit.SECONDS);
+                if ((boolean) clickResult.get("success")) {
+                    return Optional.of(StepResult.success(step.getStepId(),
+                            "通过图像识别定位并点击成功，坐标: (" + viewportX + ", " + viewportY + ")"));
                 }
+            } else {
+                log.warn("图像匹配未找到目标");
             }
         } catch (Exception e) {
-            log.error("图像识别定位失败: {}", e.getMessage());
+            log.error("图像识别定位失败: {}", e.getMessage(), e);
         }
         return Optional.empty();
     }
@@ -424,7 +529,11 @@ public class RpaTaskScheduler {
     public void onPageChanged(PageChangedEvent event) {
         runningTasks.values().stream()
                 .filter(t -> event.getBrowserSessionId().equals(t.getBrowserSessionId()))
-                .forEach(t -> t.setCurrentUrl(event.getUrl()));
+                .forEach(t -> {
+                    t.setCurrentUrl(event.getUrl());
+                    // 🔔 广播页面变化
+                    monitorService.notifyPageChange(t.getExecutionId(), event.getUrl(), event.getTitle());
+                });
     }
 
     @EventListener
@@ -448,11 +557,12 @@ public class RpaTaskScheduler {
         if (context != null) {
             CompletableFuture<Map<String, Object>> future = context.removePendingStep(event.getStepId());
             if (future != null) {
-                future.complete(Map.of(
-                        "success", event.isSuccess(),
-                        "message", event.getData() != null ? event.getData().get("message") : "",
-                        "data", event.getData() != null ? event.getData() : new HashMap<>()
-                ));
+                Map<String, Object> result = new HashMap<>();
+                result.put("success", event.isSuccess());
+                result.put("message", event.getData() != null ? event.getData().get("message") : "");
+                result.put("error", event.getData() != null ? event.getData().get("error") : "");
+                result.put("data", event.getData() != null ? event.getData() : new HashMap<>());
+                future.complete(result);
             }
         }
     }
@@ -483,6 +593,7 @@ public class RpaTaskScheduler {
                                                 TaskExecutionContext context) {
         log.info("🧠 AI Agent尝试智能修复步骤 {}", failedStep.getStepId());
 
+        // 1. 先尝试知识图谱修复（快通道）
         Optional<String> kgSolution = knowledgeGraphService.findSolution(
                 new RuntimeException(failure.getError()),
                 failedStep,
@@ -490,13 +601,82 @@ public class RpaTaskScheduler {
         );
 
         if (kgSolution.isPresent()) {
-            log.info("💡 应用知识图谱方案: {}", kgSolution.get());
-            RpaStep fixedStep = applyKnowledgeFix(failedStep, kgSolution.get());
+            String solution = kgSolution.get();
+            log.info("💡 应用知识图谱方案: {}", solution);
+            RpaStep fixedStep = applyKnowledgeFix(failedStep, solution);
             try {
-                return Optional.of(executeStepWithRetry(executionId, browserId, fixedStep, context));
+                StepResult fixResult = executeStepWithRetry(executionId, browserId, fixedStep, context);
+                knowledgeGraphService.recordSuccessSolution(
+                        new RuntimeException(failure.getError()),
+                        failedStep,
+                        solution,
+                        context.getCurrentUrl()
+                );
+                return Optional.of(fixResult);
             } catch (Exception e) {
                 log.error("知识图谱方案也失败", e);
             }
+        }
+
+        // 2. 知识图谱修不好，调用 LLM 进行运行时诊断（慢但智能）
+        log.info("🤖 知识图谱无方案，尝试 LLM 运行时修复");
+        try {
+            // 2.1 获取页面上下文
+            AgentCommand contextCmd = AgentCommand.builder()
+                    .taskId(executionId)
+                    .stepId(String.valueOf(failedStep.getStepId()))
+                    .action("get_page_context")
+                    .timeout(5000)
+                    .build();
+
+            CompletableFuture<Map<String, Object>> contextFuture = new CompletableFuture<>();
+            context.registerPendingStep(failedStep.getStepId(), contextFuture);
+            browserHandler.sendCommand(browserId, contextCmd);
+
+            Map<String, Object> pageResult = contextFuture.get(5, TimeUnit.SECONDS);
+            String pageContextJson = (String) pageResult.get("message");
+            com.alibaba.fastjson2.JSONObject ctx = com.alibaba.fastjson2.JSON.parseObject(pageContextJson);
+            String pageHtml = ctx.getString("html");
+            String pageUrl = ctx.getString("url");
+
+            // 2.2 LLM 诊断
+            Optional<RpaStep> llmFix = aiAutoFixService.fixStep(
+                    failedStep,
+                    failure.getError(),
+                    pageUrl != null ? pageUrl : context.getCurrentUrl(),
+                    pageHtml
+            );
+
+            if (llmFix.isPresent()) {
+                RpaStep fixedStep = llmFix.get();
+                log.info("💡 应用 LLM 修复方案: {} -> {}", fixedStep.getAction(), fixedStep.getTarget());
+                StepResult fixResult = executeStepWithRetry(executionId, browserId, fixedStep, context);
+
+                // 记录成功修复到知识图谱，形成学习闭环
+                String solution = String.format("LLM修复: %s -> %s", fixedStep.getAction(), fixedStep.getTarget());
+                knowledgeGraphService.recordSuccessSolution(
+                        new RuntimeException(failure.getError()),
+                        failedStep,
+                        solution,
+                        context.getCurrentUrl()
+                );
+                if ("click".equals(fixedStep.getAction()) || "input".equals(fixedStep.getAction())) {
+                    java.util.List<String> alts = new java.util.ArrayList<>();
+                    if (failedStep.getTarget() != null) alts.add(failedStep.getTarget());
+                    knowledgeGraphService.recordElementPattern(
+                            context.getCurrentUrl(),
+                            fixedStep.getAction(),
+                            fixedStep.getTarget(),
+                            alts,
+                            fixedStep.getImageTemplate(),
+                            fixedStep.getImageThreshold()
+                    );
+                }
+
+                return Optional.of(fixResult);
+            }
+        } catch (Exception e) {
+            log.error("❌ LLM 运行时修复失败: {}", e.getMessage(), e);
         }
 
         return Optional.empty();
@@ -521,7 +701,21 @@ public class RpaTaskScheduler {
         fixed.setDescription(original.getDescription() + " [修复]");
         fixed.setRetryCount(1);
 
-        if (solution.contains("备选定位:")) {
+        if (solution.contains("视觉定位:IMG:")) {
+            // 视觉定位方案：提取 imageTemplate 和 threshold
+            fixed.setTarget(original.getTarget());
+            String imgPart = solution.substring(solution.indexOf("IMG:") + 4);
+            String base64 = imgPart;
+            double threshold = 0.8;
+            if (imgPart.contains(":THR:")) {
+                base64 = imgPart.substring(0, imgPart.indexOf(":THR:"));
+                try {
+                    threshold = Double.parseDouble(imgPart.substring(imgPart.indexOf(":THR:") + 5));
+                } catch (NumberFormatException ignored) {}
+            }
+            fixed.setImageTemplate(base64);
+            fixed.setImageThreshold(threshold);
+        } else if (solution.contains("备选定位:")) {
             String newTarget = solution.substring(solution.indexOf(":") + 1).trim();
             fixed.setTarget(newTarget);
         } else {
@@ -530,7 +724,12 @@ public class RpaTaskScheduler {
 
         fixed.setValue(original.getValue());
         fixed.setWaitTime(original.getWaitTime());
-        fixed.setImageTemplate(original.getImageTemplate());
+        if (fixed.getImageTemplate() == null) {
+            fixed.setImageTemplate(original.getImageTemplate());
+        }
+        if (fixed.getImageThreshold() == null) {
+            fixed.setImageThreshold(original.getImageThreshold());
+        }
         return fixed;
     }
 

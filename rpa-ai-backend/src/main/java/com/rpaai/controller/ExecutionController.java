@@ -93,4 +93,14 @@ public class ExecutionController {
         rpaTaskScheduler.cancelTask(executionId);
         return ResponseEntity.ok(Map.of("message", "任务已取消"));
     }
+
+    @GetMapping("/browser-status")
+    public ResponseEntity<?> getBrowserStatus() {
+        var sessions = browserSessionManager.getAllSessions();
+        boolean online = sessions.stream().anyMatch(s -> "ACTIVE".equals(s.getStatus()));
+        return ResponseEntity.ok(Map.of(
+                "online", online,
+                "count", sessions.size()
+        ));
+    }
 }

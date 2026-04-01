@@ -32,4 +32,26 @@ public interface ElementPatternRepository extends Neo4jRepository<ElementPattern
             "p.lastSuccessTime = datetime() " +
             "RETURN p")
     ElementPattern incrementUsage(String id);
+
+    /**
+     * 查找有视觉定位的模式
+     */
+    @Query("MATCH (p:ElementPattern) " +
+            "WHERE p.pageType = $pageType " +
+            "AND p.elementType = $elementType " +
+            "AND p.imageTemplate IS NOT NULL " +
+            "RETURN p ORDER BY p.successRate DESC, p.usageCount DESC LIMIT 1")
+    Optional<ElementPattern> findVisualPattern(String pageType, String elementType);
+
+    /**
+     * 获取所有模式（按成功率排序）
+     */
+    @Query("MATCH (p:ElementPattern) RETURN p ORDER BY p.successRate DESC, p.usageCount DESC")
+    List<ElementPattern> findAllPatterns();
+
+    /**
+     * 根据ID删除
+     */
+    @Query("MATCH (p:ElementPattern {id: $id}) DELETE p")
+    void deleteById(String id);
 }

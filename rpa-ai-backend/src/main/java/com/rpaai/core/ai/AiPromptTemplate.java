@@ -61,20 +61,36 @@ public class AiPromptTemplate {
         
         注意：百度搜索按钮的ID是su，但有时可能需要使用其他选择器如属性选择器
 
-        规则5：通用网站选择器（非特定网站）
+        规则5：淘宝搜索页精确选择器（非常重要）
+        
+        淘宝首页URL: https://www.taobao.com 或 https://s.taobao.com
+        
+        搜索输入框选择器（按优先级）：
+        #q, input[name='q'], .search-combobox-input, .search-combobox-input-field, #kw
+        
+        搜索按钮选择器（按优先级，关键修复）：
+        .btn-search, .search-btn, #J_SearchBtn, button[type='submit'], input[type='submit']
+        
+        【淘宝特殊要求】
+        1. 淘宝搜索按钮可能有防自动化机制，优先使用 .btn-search
+        2. 如果点击按钮无效，输入框输入后按回车键也可触发搜索
+        3. 输入完成后必须等待 1 秒再点击按钮（等待搜索建议加载）
+        4. 如果所有选择器都找不到按钮，系统会自动使用回车键提交
+
+        规则6：通用网站选择器（非特定网站）
         - 用户名：input[type='text'], input[name='username'], #username, #email, #user
         - 密码：input[type='password'], #password, #pass, input[name='password']
         - 搜索框：input[type='text'], input[name='q'], input[name='query'], #search, .search-input
         - 提交按钮：input[type='submit'], button[type='submit'], .btn-primary, .btn-submit, [value*='搜索'], [value*='Search']
 
-        规则6：输出格式
+        规则7：输出格式
         1. 输出必须是严格的JSON格式，包含"steps"数组
         2. 每个步骤必须有stepId、action、target
         3. 根据上下文推断合理的步骤顺序
         4. 为每个步骤生成人类可读的description
         5. 对于动态网站，在关键操作后添加等待步骤
         6. 如果信息不足，做出合理假设并返回最可能的步骤
-        7. 对于搜索任务：先打开URL，等待，输入关键词，点击搜索按钮，等待结果
+        7. 对于搜索任务：先打开URL，等待，输入关键词，等待1秒，点击搜索按钮，等待结果
 
         输出示例1 - 标准登录（需要输入）：
         {
@@ -119,8 +135,51 @@ public class AiPromptTemplate {
             }
           ]
         }
+        
+        输出示例2 - 淘宝搜索：
+        {
+          "steps": [
+            {
+              "stepId": 1,
+              "action": "open_url",
+              "target": "https://www.taobao.com",
+              "description": "打开淘宝首页"
+            },
+            {
+              "stepId": 2,
+              "action": "wait",
+              "waitTime": 3,
+              "description": "等待淘宝页面完全加载（淘宝较慢）"
+            },
+            {
+              "stepId": 3,
+              "action": "input",
+              "target": "#q, input[name='q'], .search-combobox-input, .search-combobox-input-field",
+              "value": "手机壳",
+              "description": "在搜索框输入关键词"
+            },
+            {
+              "stepId": 4,
+              "action": "wait",
+              "waitTime": 1,
+              "description": "等待搜索建议加载"
+            },
+            {
+              "stepId": 5,
+              "action": "click",
+              "target": ".btn-search, .search-btn, #J_SearchBtn",
+              "description": "点击淘宝搜索按钮"
+            },
+            {
+              "stepId": 6,
+              "action": "wait",
+              "waitTime": 3,
+              "description": "等待搜索结果页面加载完成"
+            }
+          ]
+        }
 
-        输出示例2 - 百度搜索：
+        输出示例3 - 百度搜索：
         {
           "steps": [
             {
@@ -158,8 +217,10 @@ public class AiPromptTemplate {
         }
 
         注意：如果用户明确说"直接登录"或"不用输入密码"，绝对不能生成input步骤！
-        注意：对于搜索类网站（百度、Google等），搜索按钮可能不止一个选择器，请提供多个备选选择器用逗号分隔！
+        注意：对于搜索类网站（百度、淘宝、Google等），搜索框和搜索按钮都可能存在多个备选选择器，请务必用逗号分隔提供多个选择器！
+        注意：淘宝页面加载较慢，需要增加等待时间！
         """;
+
 
     public static String buildTaskPrompt(String userInput) {
         return String.format("""
@@ -169,10 +230,11 @@ public class AiPromptTemplate {
 
             请分析用户意图：
             1. 这是否是登录任务？
-            2. 这是否是搜索任务？
+            2. 这是否是搜索任务？如果是，是哪个网站（百度、淘宝、其他）？
             3. 用户是否提供了具体账号密码？
             4. 用户是否说"直接登录"或"不用输入密码"？
-            5. 如果是百度/百度搜索，请使用规则4中的精确选择器！
+            5. 如果是淘宝搜索，请使用规则5中的精确选择器，并确保输入后有等待1秒再点击按钮！
+            6. 如果是百度/百度搜索，请使用规则4中的精确选择器！
             
             根据分析结果生成最合适的步骤。如果用户说"直接登录"，务必跳过input步骤！
             

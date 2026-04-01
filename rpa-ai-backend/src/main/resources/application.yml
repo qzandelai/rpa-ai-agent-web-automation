@@ -7,7 +7,7 @@ spring:
   application:
     name: rpa-ai-agent
   profiles:
-    active: dev  # 默认激活dev，本地开发时改为local
+    active: dev
   websocket:
     enabled: true
 
@@ -20,11 +20,16 @@ spring:
   data:
     mongodb:
       uri: mongodb://localhost:27017/rpa_ai_logs
-    neo4j:
-      uri: bolt://localhost:7687
-      authentication:
-        username: neo4j
-        password: rpaai123
+    # ❌ 删除这里的 neo4j 配置，移到外面
+    # neo4j:
+    #   uri: ...
+
+  # ✅ 新版 Neo4j 配置（与 data 同级）
+  neo4j:
+    uri: bolt://localhost:7687
+    authentication:
+      username: neo4j
+      password: rpaai123
 
   jpa:
     hibernate:
@@ -42,9 +47,11 @@ rpa:
   ai:
     llm:
       provider: dashscope
-      api-key:  # 留空，从local配置读取
+      api-key:
       model: qwen-plus
 
 logging:
   level:
     com.rpaai: DEBUG
+    org.springframework.data.neo4j: DEBUG  # 添加Neo4j调试日志
+    org.neo4j.driver: DEBUG

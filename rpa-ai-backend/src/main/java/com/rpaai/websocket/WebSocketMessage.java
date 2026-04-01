@@ -17,7 +17,9 @@ public class WebSocketMessage {
     private String stepId;
     private Map<String, Object> data;
 
-    // ✅ 修复：添加 @Builder.Default
+    // 添加此字段，兼容前端直接发送的 clientType
+    private String clientType;
+
     @Builder.Default
     private Long timestamp = System.currentTimeMillis();
 }
