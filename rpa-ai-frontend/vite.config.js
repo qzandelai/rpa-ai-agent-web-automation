@@ -10,13 +10,17 @@ export default defineConfig({
     }
   },
   server: {
-    // 使用Vite默认配置（localhost:5173）
     proxy: {
-      '/api': {
-        target: 'http://localhost:8080/rpa-ai',
-        changeOrigin: true
-        // 不需要rewrite，路径会自动匹配
-      }
+        '/api': {
+            target: 'http://localhost:8080/rpa-ai',
+            changeOrigin: true
+        },
+        // WebSocket 代理需要单独配置
+        '/rpa-ai/ws': {
+            target: 'ws://localhost:8080',
+            changeOrigin: true,
+            ws: true
+        }
     }
-  }
+}
 })
